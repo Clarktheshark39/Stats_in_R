@@ -1,0 +1,334 @@
+---
+title: "Peer Assessment II"
+output:
+  html_document: 
+    pandoc_args: [
+      "--number-sections",
+    ]
+---
+
+# Background
+
+As a statistical consultant working for a real estate investment firm, your task is to develop a model to predict the selling price of a given home in Ames, Iowa. Your employer hopes to use this information to help assess whether the asking price of a house is higher or lower than the true value of the house. If the home is undervalued, it may be a good investment for the firm.
+
+# Training Data and relevant packages
+
+In order to better assess the quality of the model you will produce, the data have been randomly divided into three separate pieces: a training data set, a testing data set, and a validation data set. For now we will load the training data set, the others will be loaded and used later.
+
+```{r load, message = FALSE}
+load("ames_train.Rdata")
+```
+
+Use the code block below to load any necessary packages
+
+```{r packages, message = FALSE}
+library(statsr)
+library(dplyr)
+library(BAS)
+library(GGally)
+library(ggplot2)
+library(MASS)
+```
+
+## Part 1 - Exploratory Data Analysis (EDA)
+
+When you first get your data, it's very tempting to immediately begin fitting models and assessing how they perform.  However, before you begin modeling, it's absolutely essential to explore the structure of the data and the relationships between the variables in the data set.
+
+Do a detailed EDA of the ames_train data set, to learn about the structure of the data and the relationships between the variables in the data set (refer to Introduction to Probability and Data, Week 2, for a reminder about EDA if needed). Your EDA should involve creating and reviewing many plots/graphs and considering the patterns and relationships you see. 
+
+After you have explored completely, submit the three graphs/plots that you found most informative during your EDA process, and briefly explain what you learned from each (why you found each informative).
+
+* * *
+
+After a detailed EDA, I have chosen the following three plots as the most informative (along with some text output). The first plot plots the relationship between 5 different numerical variables and price. It is clear that some of these variables have little influence on price (Yr.Sold), while others (area) have significant influence. This clarifies more clearly which variables may be better to include in the model. 
+
+```{r creategraphs 1, warning=FALSE}
+str(ames_train)
+summary(ames_train)
+# Change certain variables to factors that should be
+ames_train$MS.SubClass <- factor(ames_train$MS.SubClass)
+ames_train$Overall.Cond <- factor(ames_train$Overall.Cond)
+ames_train$Overall.Qual <- factor(ames_train$Overall.Qual)
+# exploring missing values
+missing <- sapply(ames_train, function(x) sum(is.na(x)))
+missing <- sort(missing, decreasing = TRUE)
+some_missing <- missing[missing > 0]
+some_missing
+# The varaiables with missing values seem to make sense for the most part...the missing data that does not have a logical explanation is limited
+# Let's look at how some of the numerical variables relate to price and to each other...I will only select a few that seem like they may influce price the most obviously
+numbers <- sapply(ames_train, is.integer)
+numbers <- ames_train[, numbers]
+numbers <- numbers %>% dplyr::select(price, area, Bedroom.AbvGr, Garage.Area, Yr.Sold, Pool.Area)
+ggpairs(numbers)
+```
+
+The next plot is the relationship between area and price, the variable that is most closely correlated with price. We can see that that with a simple log transformation, price and area seem to have a linear relationship. We also can see that there are at least two outliers in the data.
+
+```{r plot 2}
+ggplot(ames_train, aes(x = log(ames_train$price), y = ames_train$area)) +
+  geom_point(alpha = 0.3) +
+  geom_smooth(method = "lm") +
+  xlab("Log Price ($)") +
+  ylab("Area (SqFt)") +
+  ggtitle("Price vs Area") +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+# clearly a couple outliers at least based on area to price relationship
+outlier_1 <- ames_train %>% filter(log(ames_train$price) > 12 & ames_train$area > 4500)
+outlier_1$PID
+outlier_2 <- ames_train %>% filter(log(ames_train$price) < 9.5 & ames_train$area < 1000)
+outlier_2$PID
+```
+
+In the final plot, the relatitonship between neighborhood and price is displayed. This information is extremely helpful in determining which neighborhoods should be invested in. Certain neighborhoods offer more varaince, while in others almost all homes sell within a given range. Being able to purchase a house in the lower quantile of a neighborhood's price range is a good indicator that this house may be priced below it's true value. 
+
+```{r plot 3}
+# Summary statistics by neighborhood
+ggplot(ames_train, aes(x = reorder(ames_train$Neighborhood, ames_train$price) , y = ames_train$price / 1000, fill = ames_train$Neighborhood)) +
+  geom_boxplot() +
+  xlab("Neighborhood") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  ylab("Mean Price (1000s)") +
+  ggtitle("House Price by Neighborhood") +
+  theme(plot.title = element_text(hjust = 0.5, face = "bold")) +
+  scale_fill_discrete(name = "Neighborhoods")
+
+```
+
+* * *
+
+## Part 2 - Development and assessment of an initial model, following a semi-guided process of analysis
+
+### Section 2.1 An Initial Model
+In building a model, it is often useful to start by creating a simple, intuitive initial model based on the results of the exploratory data analysis. (Note: The goal at this stage is **not** to identify the "best" possible model but rather to choose a reasonable and understandable starting point. Later you will expand and revise this model to create your final model.
+
+Based on your EDA, select *at most* 10 predictor variables from “ames_train” and create a linear model for `price` (or a transformed version of price) using those variables. Provide the *R code* and the *summary output table* for your model, a *brief justification* for the variables you have chosen, and a *brief discussion* of the model results in context (focused on the variables that appear to be important predictors and how they relate to sales price).
+
+* * *
+
+Below I have made an initial model. The summary is a little "messy" as I have included multiple categorical variables, but I thought these varialbes may have some real influcence on price. I chose to transform price in order to create a smoother spread of price and hopefully increase the linearity of its relationships to other variables. I chose to include "area" and "Garage.Area" after my EDA, which showed me they both were highly correlated variables with price. "House.Style", "Overall.Qual", "Neighborhood", "Exter.Qual" and "Sale.Condition" were included as I thought intuitively they would be a good indicator of price. I included "Pool.Area" and "Screen.Porch" in order to explore further if these features really influenced price. 
+
+```{r fit_model}
+init.model <- lm(log(price) ~ log(area) + House.Style + Overall.Qual + Neighborhood + Exter.Qual + Sale.Condition + Pool.Area + Screen.Porch + Garage.Area, ames_train)
+summary(init.model)
+```
+
+Upon viewing the summary of the model, it appears that some of the varialbes are likely important for creating an accurate model, but certainly some of the variables are likely best left out of the "ideal" model. "area", "Screen.Porch", and "Garage.Area" all seem to be variables that would be kept in the model. The categorical variables do add some value, as the R^2^ for this model is fairly high (`r summary(init.model)$adj.r.squared`), but it is difficult to make a decsion given this summary as to whether they should be included going forward.
+
+* * *
+
+### Section 2.2 Model Selection
+
+Now either using `BAS` another stepwise selection procedure choose the "best" model you can, using your initial model as your starting point. Try at least two different model selection methods and compare their results. Do they both arrive at the same model or do they disagree? What do you think this means?
+
+* * *
+
+Below I have used three different techniques to select the best model given the initial starting point of the my initial model. 
+
+* BIC: area, Overall.Qual, Neighborhood, Exter.Qual, Sale.Condition, Screen.Porch, Garage.Area
+* AIC: area, House.Style, Overal.Qual, Neighborhood, Exter.Qual, Sale.Condition, Screen.Porch, Garage.Area
+* BMA (model 1...high posterio probabilty model): area, House.Style, Overal.Qual, Neighborhood, Exter.Qual, Sale.Condition, Screen.Porch, Garage.Area
+
+All models eliminated "Pool.Area" from their best model. BIC also eliminated "House.Style", while AIC kept the variable and BMA would only keep certain levels of the variable, which is not possible, and so a further decision would need to be made about this variable for the BMA model. Overal.Qual, Neighborhood, and Sale.Condition have the same issue as House.Style in the BMA model, as only certain factor levels would be included by the optimal model suggested by BMA. It is interesting that the BMA model suggests keeping all factor levels of Exter.Qual, meaning it would suggest keeping that variable in the final model. 
+
+## Need to compare the model selection methods and explain why variables may be different...then can move onto the next one
+
+```{r bic model}
+bic_model <- stepAIC(init.model, trace = FALSE, k = log(nrow(ames_train)))
+summary(bic_model)
+```
+
+```{r aic model}
+aic_model <- stepAIC(init.model, trace = FALSE, k = 2)
+summary(aic_model)
+```
+
+```{r bma model}
+bma_model <- bas.lm(log(price) ~ log(area) + House.Style + Overall.Qual + Neighborhood + Exter.Qual + Sale.Condition + Pool.Area + Screen.Porch + Garage.Area, ames_train)
+summary(bma_model)
+```
+
+* * *
+
+### Section 2.3 Initial Model Residuals
+One way to assess the performance of a model is to examine the model's residuals. In the space below, create a residual plot for your preferred model from above and use it to assess whether your model appears to fit the data well. Comment on any interesting structure in the residual plot (trend, outliers, etc.) and briefly discuss potential implications it may have for your model and inference / prediction you might produce.
+
+* * *
+
+NOTE: Write your written response to section 2.3 here. Delete this note before you submit your work.
+
+```{r model_resid}
+```
+
+* * *
+
+### Section 2.4 Initial Model RMSE
+
+You can calculate it directly based on the model output. Be specific about the units of your RMSE (depending on whether you transformed your response variable). The value you report will be more meaningful if it is in the original units (dollars).
+
+* * *
+
+NOTE: Write your written response to section 2.4 here. Delete this note before you submit your work.
+
+
+```{r model_rmse}
+```
+
+* * *
+
+### Section 2.5 Overfitting 
+
+The process of building a model generally involves starting with an initial model (as you have done above), identifying its shortcomings, and adapting the model accordingly. This process may be repeated several times until the model fits the data reasonably well. However, the model may do well on training data but perform poorly out-of-sample (meaning, on a dataset other than the original training data) because the model is overly-tuned to specifically fit the training data. This is called “overfitting.” To determine whether overfitting is occurring on a model, compare the performance of a model on both in-sample and out-of-sample data sets. To look at performance of your initial model on out-of-sample data, you will use the data set `ames_test`.
+
+```{r loadtest, message = FALSE}
+load("ames_test.Rdata")
+```
+
+Use your model from above to generate predictions for the housing prices in the test data set.  Are the predictions significantly more accurate (compared to the actual sales prices) for the training data than the test data?  Why or why not? Briefly explain how you determined that (what steps or processes did you use)?
+
+* * *
+
+NOTE: Write your written response to section 2.5 here. Delete this note before you submit your work.
+
+```{r initmodel_test}
+```
+
+* * *
+
+**Note to the learner:** If in real-life practice this out-of-sample analysis shows evidence that the training data fits your model a lot better than the test data, it is probably a good idea to go back and revise the model (usually by simplifying the model) to reduce this overfitting. For simplicity, we do not ask you to do this on the assignment, however.
+
+## Part 3 Development of a Final Model
+
+Now that you have developed an initial model to use as a baseline, create a final model with *at most* 20 variables to predict housing prices in Ames, IA, selecting from the full array of variables in the dataset and using any of the tools that we introduced in this specialization.  
+
+Carefully document the process that you used to come up with your final model, so that you can answer the questions below.
+
+### Section 3.1 Final Model
+
+Provide the summary table for your model.
+
+* * *
+
+NOTE: Write your written response to section 3.1 here. Delete this note before you submit your work.
+
+
+```{r model_playground}
+```
+
+* * *
+
+### Section 3.2 Transformation
+
+Did you decide to transform any variables?  Why or why not? Explain in a few sentences.
+
+* * *
+
+NOTE: Write your written response to section 3.2 here. Delete this note before you submit your work.
+
+```{r model_assess}
+```
+
+* * *
+
+### Section 3.3 Variable Interaction
+
+Did you decide to include any variable interactions? Why or why not? Explain in a few sentences.
+
+* * *
+
+NOTE: Write your written response to section 3.3 here. Delete this note before you submit your work.
+
+```{r model_inter}
+```
+
+* * *
+
+### Section 3.4 Variable Selection
+
+What method did you use to select the variables you included? Why did you select the method you used? Explain in a few sentences.
+
+* * *
+
+NOTE: Write your written response to section 3.4 here. Delete this note before you submit your work.
+
+```{r model_select}
+```
+
+* * *
+
+### Section 3.5 Model Testing
+
+How did testing the model on out-of-sample data affect whether or how you changed your model? Explain in a few sentences.
+
+* * *
+
+NOTE: Write your written response to section 3.5 here. Delete this note before you submit your work.
+
+```{r model_testing}
+```
+
+* * *
+
+## Part 4 Final Model Assessment
+
+### Section 4.1 Final Model Residual
+
+For your final model, create and briefly interpret an informative plot of the residuals.
+
+* * *
+
+NOTE: Write your written response to section 4.1 here. Delete this note before you submit your work.
+
+* * *
+
+### Section 4.2 Final Model RMSE
+
+For your final model, calculate and briefly comment on the RMSE.
+
+* * *
+
+NOTE: Write your written response to section 4.2 here. Delete this note before you submit your work.
+
+* * *
+
+### Section 4.3 Final Model Evaluation
+
+What are some strengths and weaknesses of your model?
+
+* * *
+
+NOTE: Write your written response to section 4.3 here. Delete this note before you submit your work.
+
+* * *
+
+### Section 4.4 Final Model Validation
+
+Testing your final model on a separate, validation data set is a great way to determine how your model will perform in real-life practice. 
+
+You will use the “ames_validation” dataset to do some additional assessment of your final model. Discuss your findings, be sure to mention:
+* What is the RMSE of your final model when applied to the validation data?  
+* How does this value compare to that of the training data and/or testing data?
+* What percentage of the 95% predictive confidence (or credible) intervals contain the true price of the house in the validation data set?  
+* From this result, does your final model properly reflect uncertainty?
+
+```{r loadvalidation, message = FALSE}
+load("ames_validation.Rdata")
+```
+
+* * *
+
+NOTE: Write your written response to section 4.4 here. Delete this note before you submit your work.
+
+```{r model_validate}
+```
+
+* * *
+
+## Part 5 Conclusion
+
+Provide a brief summary of your results, and a brief discussion of what you have learned about the data and your model. 
+
+* * *
+
+NOTE: Write your written response to part 5 here. Delete this note before you submit your work.
+
+* * *
